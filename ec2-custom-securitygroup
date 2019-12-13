@@ -1,0 +1,27 @@
+#!/bin/bash
+#The script to launch an AWS infrastructure using CLI
+#Date: 11/12/2019
+
+echo "Defining the variables..."
+
+read -p "Enter a key pair name:" mykey
+read -p "Enter a securtiy group name:" sgname
+read -p "Enter an instance type:" instype
+read -p "Enter an image id:" imgid
+
+##KeyPair##
+echo "Creating key pair..."
+aws ec2 create-key-pair --key-name $mykey --query 'KeyMaterial' --output text > $mykey.pem
+chmod 400 $mykey.pem
+
+##Security Group###
+echo "Creating security Group ..."
+aws ec2 create-security-group --group-name $sgname --description "My cli security group"
+echo "Allowing Ingress Rules to the security group ..."
+aws ec2 authorize-security-group-ingress --group-name $sgname --protocol tcp --port 80 --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-name $sgname --protocol tcp --port 22 --cidr 0.0.0.0/0
+sgid=`aws ec2 describe-security-groups --group-names $sgname --query 'SecurityGroups[*].[GroupId]' --output text`
+
+#Launch EC2 Instance##
+echo "Launching EC2 instatnce ..."
+aws ec2 run-instances --image-id $imgid --count 1 --instance-type $instype --key-name $mykey --security-group-ids $sgid --user-data file://bootstrap.txt
