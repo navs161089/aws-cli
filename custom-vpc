@@ -1,0 +1,43 @@
+#!/bin/bash
+#The script is supposed to create a custom VPC with two subnets
+#Date: 12/12/2019
+
+#Custom VPC
+echo "Creating Custom VPC ..."
+cust_vpc=`aws ec2 create-vpc --cidr-block 10.0.0.0/16 --query 'Vpc.{VpcId:VpcId}' --output text`
+echo "Created the VPC: $cust_vpc"
+
+##Create Subnets within the VPC
+echo "Creating Subnets .."
+subnet1=`aws ec2 create-subnet --vpc-id $cust_vpc --cidr-block 10.0.1.0/24 --query 'Subnet.{SubnetId:SubnetId}' --output text`
+subnet2=`aws ec2 create-subnet --vpc-id $cust_vpc --cidr-block 10.0.2.0/24 --query 'Subnet.{SubnetId:SubnetId}' --output text`
+echo "Subnets created:"
+echo $subnet1
+echo $subnet2
+
+#Create Internet Gateway
+igw_id=`aws ec2 create-internet-gateway --query 'InternetGateway.{InternetGatewayId:InternetGatewayId}' --output text`
+echo "Create the internet gateway: $igw_id"
+
+## Attach internet gateway to VPC
+aws ec2 attach-internet-gateway --vpc-id $cust_vpc --internet-gateway-id $igw_id
+echo "The Custom VPC $cust_vpc has been attached to the internet gateway $igw_id"
+
+#Create Routing Table
+rt_table=`aws ec2 create-route-table --vpc-id $cust_vpc --query 'RouteTable.{RouteTableId:RouteTableId}' --output text`
+
+#Add route to Custom Internet Gateway
+aws ec2 create-route --route-table-id $rt_table --destination-cidr-block 0.0.0.0/0 --gateway-id $igw_id
+echo "Route added to the internet gateway $igw_id"
+
+##Describe Subnets and CIDR
+echo "Subnet Description"
+aws ec2 describe-subnets --filters "Name=vpc-id,Values=$cust_vpc" --query 'Subnets[*].{ID:SubnetId,CIDR:CidrBlock}'
+
+##Associate Subnets to Route Tables
+echo "Associate Subnets to routing tables"
+aws ec2 associate-route-table  --subnet-id $subnet1 --route-table-id $rt_table
+aws ec2 associate-route-table  --subnet-id $subnet2 --route-table-id $rt_table
+echo "$subnet1 has been associated to $rt_table"
+echo "$subnet2 has been associated to $rt_table"
+
