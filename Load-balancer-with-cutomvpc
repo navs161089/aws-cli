@@ -1,0 +1,110 @@
+#!/bin/bash
+#Create Custom VPC with the two subnets
+#Configure Security Groups
+#Launch the instances with precreated VPC and Security Groups
+
+echo "Defining the variables..."
+
+read -p "Enter a key pair name:" mykey
+read -p "Enter a securtiy group name:" sgname
+read -p "Enter an instance type:" instype
+read -p "Enter an image id:" imgid
+read -p "Enter a load balancer name:" lbname
+read -p "Enter a target group name:" tbname
+
+
+#Custom VPC
+echo "Creating Custom VPC ..."
+cust_vpc=`aws ec2 create-vpc --cidr-block 10.0.0.0/16 --query 'Vpc.{VpcId:VpcId}' --output text`
+echo "Created the VPC: $cust_vpc"
+
+##Create Subnets within the VPC
+echo "Creating Subnets .."
+subnet1=`aws ec2 create-subnet --vpc-id $cust_vpc --cidr-block 10.0.1.0/24 --availability-zone us-east-1b --query 'Subnet.{SubnetId:SubnetId}' --output text`
+subnet2=`aws ec2 create-subnet --vpc-id $cust_vpc --cidr-block 10.0.2.0/24 --availability-zone us-east-1f --query 'Subnet.{SubnetId:SubnetId}' --output text`
+echo "Subnets created:"
+echo $subnet1
+echo $subnet2
+echo "Change Subnet1 property to launch a public IPv4 address on creation"
+aws ec2 modify-subnet-attribute --subnet-id $subnet1 --map-public-ip-on-launch
+echo "Assigned Public IPV4 Address for: $subnet1"
+
+echo "Change Subnet2 property to launch a public IPv4 address on creation"
+aws ec2 modify-subnet-attribute --subnet-id $subnet2 --map-public-ip-on-launch
+echo "Assigned Public IPV4 Address for: $subnet2"
+
+#Create Internet Gateway
+igw_id=`aws ec2 create-internet-gateway --query 'InternetGateway.{InternetGatewayId:InternetGatewayId}' --output text`
+echo "Create the internet gateway: $igw_id"
+
+## Attach internet gateway to VPC
+aws ec2 attach-internet-gateway --vpc-id $cust_vpc --internet-gateway-id $igw_id
+echo "The Custom VPC $cust_vpc has been attached to the internet gateway $igw_id"
+
+#Create Routing Table
+rt_table=`aws ec2 create-route-table --vpc-id $cust_vpc --query 'RouteTable.{RouteTableId:RouteTableId}' --output text`
+
+#Add route to Custom Internet Gateway
+aws ec2 create-route --route-table-id $rt_table --destination-cidr-block 0.0.0.0/0 --gateway-id $igw_id
+echo "Route added to the internet gateway $igw_id"
+
+##Describe Subnets and CIDR
+echo "Subnet Description"
+aws ec2 describe-subnets --filters "Name=vpc-id,Values=$cust_vpc" --query 'Subnets[*].{ID:SubnetId,CIDR:CidrBlock}'
+
+##Associate Subnets to Route Tables
+echo "Associate Subnets to routing tables"
+aws ec2 associate-route-table  --subnet-id $subnet1 --route-table-id $rt_table
+aws ec2 associate-route-table  --subnet-id $subnet2 --route-table-id $rt_table
+echo "$subnet1 has been associated to $rt_table"
+echo "$subnet2 has been associated to $rt_table"
+
+##KeyPair##
+echo "Creating key pair..."
+aws ec2 create-key-pair --key-name $mykey --query 'KeyMaterial' --output text > $mykey.pem
+chmod 400 $mykey.pem
+
+##Security Group###
+echo "Creating security Group ..."
+sgid=`aws ec2 create-security-group --group-name $sgname --description "My cli security group" --vpc-id $cust_vpc --output text`
+echo "Allowing Ingress Rules to the security group ..."
+aws ec2 authorize-security-group-ingress --group-id $sgid --protocol tcp --port 80 --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id $sgid --protocol tcp --port 22 --cidr 0.0.0.0/0
+
+#Launch EC2 Instance##
+echo "Launching EC2 instatnce in subnet1 ..."
+instance_id1=`aws ec2 run-instances --image-id $imgid --count 1 --subnet-id $subnet1 --instance-type $instype --key-name $mykey --security-group-ids $sgid --user-data file://bootstrap.txt --output text --query 'Instances[*].InstanceId[]'`
+instance_id2=`aws ec2 run-instances --image-id $imgid --count 1 --subnet-id $subnet2 --instance-type $instype --key-name $mykey --security-group-ids $sgid --user-data file://bootstrap.txt --output text --query 'Instances[*].InstanceId[]'`
+
+#Create Load Balancer
+echo "Creating Load Balancer ..."
+lb_arn=`aws elbv2 create-load-balancer --name $lbname --subnets $subnet1 $subnet2 --security-groups $sgid --output text --query 'LoadBalancers[*].LoadBalancerArn'`
+echo "Created the load balancer: $lbname"
+
+#Create Target Groups
+echo "Creating Target Group ..."
+tg_arn=`aws elbv2 create-target-group --name $tgname --protocol HTTP --port 80 --vpc-id $cust_vpc --output text --query 'TargetGroups[*].TargetGroupArn'`
+echo "Created the Target Group: $tgname"
+
+#Register Target instances
+aws elbv2 register-targets --target-group-arn $tg_arn  --targets Id=$instance_id1 Id=$instance_id2
+
+#Create Listener
+aws elbv2 create-listener --load-balancer-arn $lb_arn --protocol HTTP --port 80  --default-actions Type=forward,TargetGroupArn=$tg_arn
+#Describer Load Balancer
+lb_dns=`aws elbv2 describe-load-balancers --load-balancer-arns $lb_arn --output text --query 'LoadBalancers[*].DNSName[]'`
+
+clear
+echo "Summary Details:"
+echo "================"
+echo "KeyPair Name: $mykey"
+echo "Security Group Name: $sgname"
+echo "Security Group Id: $sgid"
+echo "Custom VPC ID: $cust_vpc"
+echo "First Subnet: $subnet1"
+echo "Second Subnet: $subnet2"
+echo "Inernet Gateway Id: $igw_id"
+echo "Routing Table ID: $rt_table"
+echo "Load balancer arn: $lb_arn"
+echo "Target Group arn: $tg_arn"
+echo "Load Balancer DNS: $lb_dns"
